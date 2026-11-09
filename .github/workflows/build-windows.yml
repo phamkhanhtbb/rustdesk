@@ -17,6 +17,7 @@ env:
   VCPKG_DEFAULT_HOST_TRIPLET: "x64-windows-static"
   VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   generate-bridge:
@@ -70,7 +71,14 @@ jobs:
         run: |
           flutter doctor -v
           flutter precache --windows
-          curl.exe -fL --retry 5 --retry-delay 3 -o windows-x64-release.zip https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip
+          try {
+            gh release download main -R rustdesk/engine -p "windows-x64-release.zip" --clobber
+          } catch {
+            Write-Warning "gh release download failed, trying curl: $_"
+          }
+          if (-not (Test-Path windows-x64-release.zip)) {
+            curl.exe -fL --retry 5 --retry-delay 3 -o windows-x64-release.zip https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip
+          }
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
           mv -Force windows-x64-release/* C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
 
@@ -134,7 +142,11 @@ jobs:
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
           try {
-            curl.exe -fL --retry 5 --retry-delay 3 -o usbmmidd_v2.zip https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip
+            try {
+              gh release download usbmmidd_v2 -R rustdesk-org/rdev -p "usbmmidd_v2.zip" --clobber
+            } catch {
+              curl.exe -fL --retry 5 --retry-delay 3 -o usbmmidd_v2.zip https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip
+            }
             Expand-Archive usbmmidd_v2.zip -DestinationPath .
             Remove-Item -Path usbmmidd_v2\Win32 -Recurse -ErrorAction SilentlyContinue
             Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat" -ErrorAction SilentlyContinue
@@ -144,7 +156,11 @@ jobs:
           }
 
           try {
-            curl.exe -fL --retry 5 --retry-delay 3 -o rustdesk_printer_driver_v4-1.4.zip https://github.com/rustdesk/hbb_common/releases/download/driver/rustdesk_printer_driver_v4-1.4.zip
+            try {
+              gh release download driver -R rustdesk/hbb_common -p "rustdesk_printer_driver_v4-1.4.zip" --clobber
+            } catch {
+              curl.exe -fL --retry 5 --retry-delay 3 -o rustdesk_printer_driver_v4-1.4.zip https://github.com/rustdesk/hbb_common/releases/download/driver/rustdesk_printer_driver_v4-1.4.zip
+            }
             Expand-Archive rustdesk_printer_driver_v4-1.4.zip -DestinationPath .\rustdesk\printer
           } catch {
             Write-Warning "Failed to setup printer driver: $_"
