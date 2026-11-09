@@ -14,6 +14,8 @@ env:
   FLUTTER_VERSION: "3.24.5"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   SCITER_RUST_VERSION: "1.75"
+  VCPKG_DEFAULT_HOST_TRIPLET: "x64-windows-static"
+  VCPKG_DEFAULT_TRIPLET: "x64-windows-static"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
 jobs:
@@ -100,13 +102,30 @@ jobs:
           doNotCache: false
 
       - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         shell: bash
         run: |
-          $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet x64-windows-static \
+            --host-triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-windows-static-rel-out.log" || true
 
       - name: Build rustdesk
         run: |
           python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { throw "build.py failed with exit code $LASTEXITCODE" }
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
@@ -130,9 +149,7 @@ jobs:
         shell: bash
         run: |
           python3 -m pip install brotli
-          cd libs/portable
-          python3 ./generate.py -f ../../rustdesk -o . -e ../../rustdesk/rustdesk.exe
-          cd ../..
+          python3 ./libs/portable/generate.py -f ./rustdesk -o ./libs/portable -e rustdesk.exe
           mv ./target/release/rustdesk-portable-packer.exe ./rustdesk-install.exe
 
       - name: Upload Windows x64 Folder
