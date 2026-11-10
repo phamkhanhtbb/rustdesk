@@ -1252,6 +1252,7 @@ impl Connection {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
+        let _host_input_guard = crate::platform::host_input_monitor_guard();
         let mut block_input_mode = false;
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -1264,6 +1265,9 @@ impl Connection {
             match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(v) => match v {
                     MessageInput::Mouse(mouse_input) => {
+                        if crate::platform::is_host_input_priority_active() {
+                            continue;
+                        }
                         handle_mouse(
                             &mouse_input.msg,
                             mouse_input.conn_id,
@@ -1274,6 +1278,9 @@ impl Connection {
                         );
                     }
                     MessageInput::Key((mut msg, press)) => {
+                        if crate::platform::is_host_input_priority_active() {
+                            continue;
+                        }
                         // Set the press state to false, use `down` only in `handle_key()`.
                         msg.press = false;
                         if press {
@@ -1286,6 +1293,9 @@ impl Connection {
                         }
                     }
                     MessageInput::Pointer((msg, id)) => {
+                        if crate::platform::is_host_input_priority_active() {
+                            continue;
+                        }
                         handle_pointer(&msg, id);
                     }
                     MessageInput::BlockOn => {

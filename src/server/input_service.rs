@@ -997,6 +997,14 @@ pub fn release_device_modifiers() {
     }
 }
 
+pub fn release_remote_input_state() {
+    release_device_modifiers();
+    let mut en = ENIGO.lock().unwrap();
+    en.mouse_up(MouseButton::Left);
+    en.mouse_up(MouseButton::Right);
+    en.mouse_up(MouseButton::Middle);
+}
+
 #[inline]
 fn release_record_key(record_key: KeysDown) {
     let func = move || match record_key {
@@ -1277,6 +1285,9 @@ pub fn handle_mouse_(
 }
 
 pub fn handle_mouse_simulation_(evt: &MouseEvent, conn: i32) {
+    if crate::platform::is_host_input_priority_active() {
+        return;
+    }
     if !active_mouse_(conn) {
         return;
     }
@@ -2485,6 +2496,9 @@ fn is_legacy_mode(evt: &KeyEvent) -> bool {
 }
 
 pub fn handle_key_(evt: &KeyEvent) {
+    if crate::platform::is_host_input_priority_active() {
+        return;
+    }
     if EXITING.load(Ordering::SeqCst) {
         return;
     }

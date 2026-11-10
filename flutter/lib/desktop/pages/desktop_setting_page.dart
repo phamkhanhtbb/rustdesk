@@ -1276,6 +1276,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 context, 'Enable recording session', kOptionEnableRecordSession,
                 enabled: enabled, fakeValue: fakeValue),
             if (isWindows)
+              _OptionCheckBox(context, 'Host input priority',
+                  kOptionEnableHostInputPriority,
+                  enabled: enabled, fakeValue: fakeValue),
+            if (isWindows)
               _OptionCheckBox(context, 'Enable blocking user input',
                   kOptionEnableBlockInput,
                   enabled: enabled, fakeValue: fakeValue),

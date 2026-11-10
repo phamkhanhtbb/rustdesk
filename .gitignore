@@ -1,5 +1,6 @@
 /build
 /target
+output/
 .vscode
 .idea
 .DS_Store
@@ -50,7 +51,8 @@ lib/generated_bridge.dart
 .ssh
 .devcontainer/.*
 # build cache in examples
-examples/**/target/
+examples/**/target
+output//
 # ===
 vcpkg_installed
 flutter/lib/generated_plugin_registrant.dart

@@ -4889,6 +4889,226 @@ pub(super) fn get_pids_with_first_arg_by_wmic<S1: AsRef<str>, S2: AsRef<str>>(
         .unwrap_or_default()
 }
 
+
+// Host input priority: detect local physical input and temporarily pause remote input
+mod host_input_priority {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Mutex,
+    };
+    use winapi::{
+        ctypes::c_int,
+        shared::{
+            minwindef::{DWORD, FALSE, HMODULE, LPARAM, LRESULT, UINT, WPARAM},
+            ntdef::NULL,
+            windef::POINT,
+        },
+        um::{
+            libloaderapi::{
+                GetModuleHandleExA, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            },
+            processthreadsapi::GetCurrentThreadId,
+            sysinfoapi::GetTickCount64,
+            winuser::{
+                CallNextHookEx, DefWindowProcA, DispatchMessageA, GetMessageA, PostThreadMessageA,
+                SetWindowsHookExA, TranslateMessage, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG,
+                MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEMOVE, WM_USER,
+            },
+        },
+    };
+
+    const WM_USER_EXIT_HOOK: u32 = WM_USER + 102;
+    const HOST_INPUT_PRIORITY_TIMEOUT_MS: u64 = 1000;
+
+    lazy_static::lazy_static! {
+        static ref HOOK_THREAD_ID: Mutex<DWORD> = Mutex::new(0);
+        static ref SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
+        static ref LAST_MOUSE_POS: Mutex<POINT> = Mutex::new(POINT { x: i32::MIN, y: i32::MIN });
+    }
+
+    static LAST_LOCAL_INPUT_TICK: AtomicU64 = AtomicU64::new(0);
+    static WAS_HOST_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(any(feature = "flutter", test))]
+    pub(super) fn note_local_input() {
+        let now = unsafe { GetTickCount64() };
+        LAST_LOCAL_INPUT_TICK.store(now, Ordering::Release);
+    }
+
+    unsafe extern "system" fn hook_keyboard(
+        code: c_int,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
+        if code >= 0 && l_param != 0 {
+            let ks = *(l_param as *const KBDLLHOOKSTRUCT);
+            if ks.dwExtraInfo != enigo::ENIGO_INPUT_EXTRA_VALUE {
+                note_local_input();
+            }
+        }
+        CallNextHookEx(NULL as _, code, w_param, l_param)
+    }
+
+    unsafe extern "system" fn hook_mouse(
+        code: c_int,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
+        if code >= 0 && l_param != 0 {
+            let ms = *(l_param as *const MSLLHOOKSTRUCT);
+            if ms.dwExtraInfo != enigo::ENIGO_INPUT_EXTRA_VALUE {
+                if (w_param as UINT) == WM_MOUSEMOVE {
+                    let mut last = match LAST_MOUSE_POS.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    if last.x == i32::MIN {
+                        *last = ms.pt;
+                    } else {
+                        let dx = (ms.pt.x - last.x).abs();
+                        let dy = (ms.pt.y - last.y).abs();
+                        if dx > 1 || dy > 1 {
+                            *last = ms.pt;
+                            note_local_input();
+                        }
+                    }
+                } else {
+                    note_local_input();
+                }
+            }
+        }
+        CallNextHookEx(NULL as _, code, w_param, l_param)
+    }
+
+    pub fn start_monitor() {
+        if SESSION_COUNT.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::thread::spawn(|| {
+                unsafe {
+                    let mut hm = NULL as HMODULE;
+                    if 0 == GetModuleHandleExA(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                            | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        DefWindowProcA as _,
+                        &mut hm as _,
+                    ) {
+                        log::error!("Failed to GetModuleHandleExA for host input hook");
+                        return;
+                    }
+
+                    let hook_kb = SetWindowsHookExA(WH_KEYBOARD_LL, Some(hook_keyboard), hm, 0);
+                    let hook_ms = SetWindowsHookExA(WH_MOUSE_LL, Some(hook_mouse), hm, 0);
+
+                    if hook_kb.is_null() || hook_ms.is_null() {
+                        log::error!("Failed SetWindowsHookExA for host input priority");
+                        if !hook_kb.is_null() {
+                            UnhookWindowsHookEx(hook_kb);
+                        }
+                        if !hook_ms.is_null() {
+                            UnhookWindowsHookEx(hook_ms);
+                        }
+                        return;
+                    }
+
+                    *HOOK_THREAD_ID.lock().unwrap() = GetCurrentThreadId();
+
+                    let mut msg: MSG = std::mem::zeroed();
+                    while FALSE != GetMessageA(&mut msg, NULL as _, 0, 0) {
+                        if msg.message == WM_USER_EXIT_HOOK {
+                            break;
+                        }
+                        TranslateMessage(&msg);
+                        DispatchMessageA(&msg);
+                    }
+
+                    UnhookWindowsHookEx(hook_kb);
+                    UnhookWindowsHookEx(hook_ms);
+                    *HOOK_THREAD_ID.lock().unwrap() = 0;
+                }
+            });
+        }
+    }
+
+    pub fn stop_monitor() {
+        let mut current = SESSION_COUNT.load(Ordering::SeqCst);
+        loop {
+            if current == 0 {
+                return;
+            }
+            match SESSION_COUNT.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(prev) => {
+                    if prev == 1 {
+                        let thread_id = *HOOK_THREAD_ID.lock().unwrap();
+                        if thread_id != 0 {
+                            unsafe {
+                                PostThreadMessageA(thread_id, WM_USER_EXIT_HOOK, 0, 0);
+                            }
+                        }
+                    }
+                    return;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub fn is_active() -> bool {
+        if hbb_common::config::Config::get_option("enable-host-input-priority") == "N" {
+            return false;
+        }
+
+        let last = LAST_LOCAL_INPUT_TICK.load(Ordering::Acquire);
+        if last == 0 {
+            return false;
+        }
+
+        let now = unsafe { GetTickCount64() };
+        let elapsed = now.saturating_sub(last);
+        if elapsed < HOST_INPUT_PRIORITY_TIMEOUT_MS {
+            if !WAS_HOST_ACTIVE.swap(true, Ordering::SeqCst) {
+                #[cfg(not(target_os = "android"))]
+                crate::server::input_service::release_remote_input_state();
+            }
+            true
+        } else {
+            if WAS_HOST_ACTIVE.load(Ordering::Relaxed) {
+                WAS_HOST_ACTIVE.store(false, Ordering::SeqCst);
+            }
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_for_test() {
+        LAST_LOCAL_INPUT_TICK.store(0, Ordering::SeqCst);
+        WAS_HOST_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+pub struct HostInputMonitorGuard(bool);
+
+impl Drop for HostInputMonitorGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            host_input_priority::stop_monitor();
+        }
+    }
+}
+
+pub fn host_input_monitor_guard() -> HostInputMonitorGuard {
+    host_input_priority::start_monitor();
+    HostInputMonitorGuard(true)
+}
+
+pub fn is_host_input_priority_active() -> bool {
+    host_input_priority::is_active()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4990,5 +5210,15 @@ ProcessId=10136
             arg,
         );
         assert_eq!(pids.len(), 0);
+    }
+
+    #[test]
+    fn test_host_input_priority_lifecycle() {
+        host_input_priority::reset_for_test();
+        assert!(!is_host_input_priority_active());
+
+        // Simulate local physical input
+        host_input_priority::note_local_input();
+        assert!(is_host_input_priority_active());
     }
 }

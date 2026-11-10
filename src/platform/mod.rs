@@ -239,6 +239,19 @@ pub fn get_pids_of_process_with_first_arg<S1: AsRef<str>, S2: AsRef<str>>(
     }
 }
 
+#[cfg(not(windows))]
+pub struct HostInputMonitorGuard;
+
+#[cfg(not(windows))]
+pub fn host_input_monitor_guard() -> HostInputMonitorGuard {
+    HostInputMonitorGuard
+}
+
+#[cfg(not(windows))]
+pub fn is_host_input_priority_active() -> bool {
+    false
+}
+
 #[cfg(all(test, any(windows, target_os = "macos")))]
 mod tests {
     use super::*;
