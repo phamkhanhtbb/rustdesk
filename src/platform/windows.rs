@@ -4892,6 +4892,7 @@ pub(super) fn get_pids_with_first_arg_by_wmic<S1: AsRef<str>, S2: AsRef<str>>(
 
 // Host input priority: detect local physical input and temporarily pause remote input
 mod host_input_priority {
+    use hbb_common::log;
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Mutex,
